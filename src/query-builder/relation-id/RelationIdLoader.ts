@@ -16,11 +16,23 @@ export class RelationIdLoader {
         protected connection: DataSource,
         protected queryRunner: QueryRunner | undefined,
         protected relationIdAttributes: RelationIdAttribute[],
+        protected columnAlias?: (alias: string, column: string) => string,
     ) {}
 
     // -------------------------------------------------------------------------
     // Public Methods
     // -------------------------------------------------------------------------
+
+    private buildColumnAlias(alias: string, column: string): string {
+        return this.columnAlias
+            ? this.columnAlias(alias, column)
+            : DriverUtils.buildAlias(
+                  this.connection.driver,
+                  undefined,
+                  alias,
+                  column,
+              )
+    }
 
     async load(rawEntities: any[]): Promise<RelationIdLoadResult[]> {
         const promises = this.relationIdAttributes.map(
@@ -48,9 +60,7 @@ export class RelationIdLoader {
                                     result[joinColumn.databaseName] =
                                         this.connection.driver.prepareHydratedValue(
                                             rawEntity[
-                                                DriverUtils.buildAlias(
-                                                    this.connection.driver,
-                                                    undefined,
+                                                this.buildColumnAlias(
                                                     relationIdAttr.parentAlias,
                                                     joinColumn.databaseName,
                                                 )
@@ -75,9 +85,7 @@ export class RelationIdLoader {
                                     result[primaryColumn.databaseName] =
                                         this.connection.driver.prepareHydratedValue(
                                             rawEntity[
-                                                DriverUtils.buildAlias(
-                                                    this.connection.driver,
-                                                    undefined,
+                                                this.buildColumnAlias(
                                                     relationIdAttr.parentAlias,
                                                     primaryColumn.databaseName,
                                                 )
@@ -139,9 +147,7 @@ export class RelationIdLoader {
                                         joinColumn.databaseName + index
                                     const parameterValue =
                                         rawEntity[
-                                            DriverUtils.buildAlias(
-                                                this.connection.driver,
-                                                undefined,
+                                            this.buildColumnAlias(
                                                 relationIdAttr.parentAlias,
                                                 joinColumn.referencedColumn!
                                                     .databaseName,
@@ -271,9 +277,7 @@ export class RelationIdLoader {
                         return joinColumns.reduce((map, joinColumn) => {
                             map[joinColumn.propertyPath] =
                                 rawEntity[
-                                    DriverUtils.buildAlias(
-                                        this.connection.driver,
-                                        undefined,
+                                    this.buildColumnAlias(
                                         relationIdAttr.parentAlias,
                                         joinColumn.referencedColumn!
                                             .databaseName,

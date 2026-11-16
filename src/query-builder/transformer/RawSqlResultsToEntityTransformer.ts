@@ -9,7 +9,6 @@ import { OrmUtils } from "../../util/OrmUtils"
 import { QueryExpressionMap } from "../QueryExpressionMap"
 import { EntityMetadata } from "../../metadata/EntityMetadata"
 import { QueryRunner } from "../.."
-import { DriverUtils } from "../../driver/DriverUtils"
 import { ObjectUtils } from "../../util/ObjectUtils"
 
 /**
@@ -22,6 +21,13 @@ export class RawSqlResultsToEntityTransformer {
      * In the hashmap you will find the idMaps of a result under the hash of this.hashEntityIds for the result.
      */
     private relationIdMaps: Array<{ [idHash: string]: any[] }>
+    private readonly aliases = new Map<string, Map<string, string>>()
+    private readonly columns = new Map<
+        string,
+        Map<EntityMetadata, [string, ColumnMetadata][]>
+    >()
+    private readonly groupKeys = new Map<Alias, string[]>()
+    private readonly selections: Set<string>
 
     // -------------------------------------------------------------------------
     // Constructor
@@ -33,7 +39,11 @@ export class RawSqlResultsToEntityTransformer {
         protected rawRelationIdResults: RelationIdLoadResult[],
         protected rawRelationCountResults: RelationCountLoadResult[],
         protected queryRunner?: QueryRunner,
-    ) {}
+    ) {
+        this.selections = new Set(
+            expressionMap.selects.map((select) => select.selection),
+        )
+    }
 
     // -------------------------------------------------------------------------
     // Public Methods
@@ -66,32 +76,20 @@ export class RawSqlResultsToEntityTransformer {
      */
     protected group(rawResults: any[], alias: Alias): Map<string, any[]> {
         const map = new Map()
-        const keys: string[] = []
-        if (alias.metadata.tableType === "view") {
-            keys.push(
-                ...alias.metadata.columns.map((column) =>
-                    DriverUtils.buildAlias(
-                        this.driver,
-                        undefined,
-                        alias.name,
-                        column.databaseName,
-                    ),
-                ),
+        let keys = this.groupKeys.get(alias)
+        if (!keys) {
+            const columns =
+                alias.metadata.tableType === "view"
+                    ? alias.metadata.columns
+                    : alias.metadata.primaryColumns
+            keys = columns.map((column) =>
+                this.buildColumnAlias(alias.name, column.databaseName),
             )
-        } else {
-            keys.push(
-                ...alias.metadata.primaryColumns.map((column) =>
-                    DriverUtils.buildAlias(
-                        this.driver,
-                        undefined,
-                        alias.name,
-                        column.databaseName,
-                    ),
-                ),
-            )
+            this.groupKeys.set(alias, keys)
         }
+        const groupKeys = keys
         rawResults.forEach((rawResult) => {
-            const id = keys
+            const id = groupKeys
                 .map((key) => {
                     const keyValue = rawResult[key]
 
@@ -128,16 +126,12 @@ export class RawSqlResultsToEntityTransformer {
         let metadata = alias.metadata
 
         if (metadata.discriminatorColumn) {
+            const discriminatorKey = this.buildColumnAlias(
+                alias.name,
+                alias.metadata.discriminatorColumn!.databaseName,
+            )
             const discriminatorValues = rawResults.map(
-                (result) =>
-                    result[
-                        DriverUtils.buildAlias(
-                            this.driver,
-                            undefined,
-                            alias.name,
-                            alias.metadata.discriminatorColumn!.databaseName,
-                        )
-                    ],
+                (result) => result[discriminatorKey],
             )
             const discriminatorMetadata = metadata.childEntityMetadatas.find(
                 (childEntityMetadata) => {
@@ -202,6 +196,46 @@ export class RawSqlResultsToEntityTransformer {
         return undefined
     }
 
+    private buildColumnAlias(alias: string, column: string): string {
+        let columns = this.aliases.get(alias)
+        if (!columns) this.aliases.set(alias, (columns = new Map()))
+        let key = columns.get(column)
+        if (key === undefined) {
+            key = this.expressionMap.getColumnAlias(this.driver, alias, column)
+            columns.set(column, key)
+        }
+        return key
+    }
+
+    private getColumns(
+        alias: string,
+        metadata: EntityMetadata,
+    ): [string, ColumnMetadata][] {
+        let byMetadata = this.columns.get(alias)
+        if (!byMetadata) this.columns.set(alias, (byMetadata = new Map()))
+        let columns = byMetadata.get(metadata)
+        if (!columns) {
+            columns = metadata.columns
+                .filter(
+                    (column) =>
+                        !column.isVirtual &&
+                        !metadata.childEntityMetadatas.some(
+                            (child) => child.target === column.target,
+                        ) &&
+                        (this.selections.has(alias) ||
+                            this.selections.has(
+                                alias + "." + column.propertyPath,
+                            )),
+                )
+                .map((column) => [
+                    this.buildColumnAlias(alias, column.databaseName),
+                    column,
+                ])
+            byMetadata.set(metadata, columns)
+        }
+        return columns
+    }
+
     // get value from columns selections and put them into object
     protected transformColumns(
         rawResults: any[],
@@ -210,47 +244,16 @@ export class RawSqlResultsToEntityTransformer {
         metadata: EntityMetadata,
     ): boolean {
         let hasData = false
-        metadata.columns.forEach((column) => {
-            // if table inheritance is used make sure this column is not child's column
-            if (
-                metadata.childEntityMetadatas.length > 0 &&
-                metadata.childEntityMetadatas.findIndex(
-                    (childMetadata) => childMetadata.target === column.target,
-                ) !== -1
-            )
-                return
-
-            const value =
-                rawResults[0][
-                    DriverUtils.buildAlias(
-                        this.driver,
-                        undefined,
-                        alias.name,
-                        column.databaseName,
-                    )
-                ]
-            if (value === undefined || column.isVirtual) return
-
-            // if user does not selected the whole entity or he used partial selection and does not select this particular column
-            // then we don't add this column and its value into the entity
-            if (
-                !this.expressionMap.selects.find(
-                    (select) =>
-                        select.selection === alias.name ||
-                        select.selection ===
-                            alias.name + "." + column.propertyPath,
-                )
-            )
-                return
-
+        const row = rawResults[0]
+        for (const [key, column] of this.getColumns(alias.name, metadata)) {
+            const value = row[key]
+            if (value === undefined) continue
             column.setEntityValue(
                 entity,
                 this.driver.prepareHydratedValue(value, column),
             )
-            if (value !== null && !column.isVirtualProperty)
-                // we don't mark it as has data if we will have only nulls or virtual properties in our object- we don't need such object
-                hasData = true
-        })
+            if (value !== null && !column.isVirtualProperty) hasData = true
+        }
         return hasData
     }
 
@@ -417,12 +420,7 @@ export class RawSqlResultsToEntityTransformer {
 
                 const referenceColumnValue =
                     rawSqlResults[0][
-                        DriverUtils.buildAlias(
-                            this.driver,
-                            undefined,
-                            alias.name,
-                            referenceColumnName,
-                        )
+                        this.buildColumnAlias(alias.name, referenceColumnName)
                     ] // we use zero index since its grouped data // todo: selection with alias for entity columns wont work
                 if (
                     referenceColumnValue !== undefined &&
@@ -477,9 +475,7 @@ export class RawSqlResultsToEntityTransformer {
                     valueMap[column.databaseName] =
                         this.driver.prepareHydratedValue(
                             rawSqlResult[
-                                DriverUtils.buildAlias(
-                                    this.driver,
-                                    undefined,
+                                this.buildColumnAlias(
                                     parentAlias,
                                     column.databaseName,
                                 )
@@ -490,9 +486,7 @@ export class RawSqlResultsToEntityTransformer {
                     valueMap[column.databaseName] =
                         this.driver.prepareHydratedValue(
                             rawSqlResult[
-                                DriverUtils.buildAlias(
-                                    this.driver,
-                                    undefined,
+                                this.buildColumnAlias(
                                     parentAlias,
                                     column.referencedColumn!.databaseName,
                                 )
