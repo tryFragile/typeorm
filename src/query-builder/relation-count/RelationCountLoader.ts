@@ -13,6 +13,7 @@ export class RelationCountLoader {
         protected connection: DataSource,
         protected queryRunner: QueryRunner | undefined,
         protected relationCountAttributes: RelationCountAttribute[],
+        protected columnAlias?: (alias: string, column: string) => string,
     ) {}
 
     // -------------------------------------------------------------------------
@@ -36,7 +37,7 @@ export class RelationCountLoader {
                     const inverseRelation = relation.inverseRelation! // "post.category"
                     const referenceColumnName =
                         inverseRelation.joinColumns[0].referencedColumn!
-                            .propertyName // post id
+                            .databaseName // post id
                     const inverseSideTable =
                         relation.inverseEntityMetadata.target // Post
                     const inverseSideTableName =
@@ -49,9 +50,14 @@ export class RelationCountLoader {
                         .map(
                             (rawEntity) =>
                                 rawEntity[
-                                    relationCountAttr.parentAlias +
-                                        "_" +
-                                        referenceColumnName
+                                    this.columnAlias
+                                        ? this.columnAlias(
+                                              relationCountAttr.parentAlias,
+                                              referenceColumnName,
+                                          )
+                                        : relationCountAttr.parentAlias +
+                                          "_" +
+                                          referenceColumnName
                                 ],
                         )
                         .filter((value) => !!value)
@@ -143,9 +149,14 @@ export class RelationCountLoader {
                         .map(
                             (rawEntity) =>
                                 rawEntity[
-                                    relationCountAttr.parentAlias +
-                                        "_" +
-                                        joinTableColumnName
+                                    this.columnAlias
+                                        ? this.columnAlias(
+                                              relationCountAttr.parentAlias,
+                                              joinTableColumnName,
+                                          )
+                                        : relationCountAttr.parentAlias +
+                                          "_" +
+                                          joinTableColumnName
                                 ],
                         )
                         .filter((value) => !!value)

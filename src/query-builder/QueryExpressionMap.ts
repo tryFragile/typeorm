@@ -16,6 +16,9 @@ import { TypeORMError } from "../error"
 import { WhereClause } from "./WhereClause"
 import { UpsertType } from "../driver/types/UpsertType"
 import { CockroachConnectionOptions } from "../driver/cockroachdb/CockroachConnectionOptions"
+import { ColumnAliasMap } from "./ColumnAliasMap"
+import { Driver } from "../driver/Driver"
+import { DriverUtils } from "../driver/DriverUtils"
 
 /**
  * Contains all properties of the QueryBuilder that needs to be build a final query.
@@ -34,6 +37,26 @@ export class QueryExpressionMap {
      * Indicates if QueryBuilder used to select entities and not a raw results.
      */
     queryEntity: boolean = false
+
+    /** Present only while executing an entity-only query, including its clones. */
+    columnAliases?: ColumnAliasMap
+
+    private readonly legacyColumnAliases = new Map<
+        string,
+        Map<string, string>
+    >()
+
+    getColumnAlias(driver: Driver, alias: string, column: string): string {
+        if (this.columnAliases) return this.columnAliases.get(alias, column)
+        let columns = this.legacyColumnAliases.get(alias)
+        if (!columns) this.legacyColumnAliases.set(alias, (columns = new Map()))
+        let name = columns.get(column)
+        if (name === undefined) {
+            name = DriverUtils.buildAlias(driver, undefined, alias, column)
+            columns.set(column, name)
+        }
+        return name
+    }
 
     /**
      * Main alias is a main selection object selected by QueryBuilder.
@@ -487,6 +510,8 @@ export class QueryExpressionMap {
      */
     clone(): QueryExpressionMap {
         const map = new QueryExpressionMap(this.connection)
+        map.queryEntity = this.queryEntity
+        map.columnAliases = this.columnAliases
         map.queryType = this.queryType
         map.selects = this.selects.map((select) => select)
         map.maxExecutionTime = this.maxExecutionTime
