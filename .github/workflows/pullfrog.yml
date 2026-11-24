@@ -20,9 +20,10 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      actions: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -31,6 +32,9 @@ jobs:
         with:
           prompt: ${{ inputs.prompt }}
         env:
+          # Read-only access to CI logs and artifacts.
+          CI_READ_TOKEN: ${{ github.token }}
+
           # add at least one provider API key
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
